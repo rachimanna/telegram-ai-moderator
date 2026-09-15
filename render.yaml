@@ -1,0 +1,80 @@
+services:
+  - type: worker
+    name: telegram-ai-moderator
+    runtime: python
+    plan: free
+    region: frankfurt
+
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+
+      - key: BOT_TOKEN
+        sync: false
+
+      - key: DATABASE_URL
+        fromDatabase:
+          name: telegram-ai-moderator-db
+          property: connectionString
+
+      - key: AI_BASE_URL
+        value: https://api.openai.com/v1
+
+      - key: AI_API_KEY
+        sync: false
+
+      - key: AI_MODEL
+        sync: false
+
+      - key: LOG_LEVEL
+        value: INFO
+
+      - key: TIMEZONE
+        value: Europe/Berlin
+
+      - key: DEFAULT_MODERATION_ENABLED
+        value: "true"
+
+      - key: DEFAULT_AI_ANSWERS_ENABLED
+        value: "true"
+
+      - key: DEFAULT_STRICTNESS
+        value: medium
+
+      - key: DEFAULT_MODERATION_ACTION
+        value: warn
+
+      - key: DEFAULT_WARNING_THRESHOLD
+        value: "3"
+
+      - key: MAX_CONTEXT_MESSAGES
+        value: "100"
+
+      - key: MAX_MESSAGE_LENGTH
+        value: "4000"
+
+      - key: AI_TIMEOUT_SECONDS
+        value: "30"
+
+      - key: DAILY_SUMMARY_ENABLED
+        value: "true"
+
+      - key: WEEKLY_SUMMARY_ENABLED
+        value: "true"
+
+      - key: DAILY_SUMMARY_HOUR
+        value: "21"
+
+      - key: WEEKLY_SUMMARY_DAY
+        value: sunday
+
+      - key: WEEKLY_SUMMARY_HOUR
+        value: "20"
+
+databases:
+  - name: telegram-ai-moderator-db
+    plan: free
+    region: frankfurt
