@@ -1,4 +1,5 @@
 import logging
+from datetime import time
 
 from telegram.ext import (
     Application,
@@ -8,6 +9,7 @@ from telegram.ext import (
 from app.config import get_settings
 from app.db.base import Base
 from app.db.session import engine
+from app.handlers.admin import register_admin_handlers
 from app.handlers.callbacks import register_callback_handlers
 from app.handlers.commands import register_command_handlers
 from app.handlers.messages import register_message_handlers
@@ -51,20 +53,24 @@ async def post_init(
 
     settings = get_settings()
 
-    # Daily summaries.
+    # ---------------------------------------------
+    # Daily summaries
+    # ---------------------------------------------
+
     if settings.daily_summary_enabled:
         job_queue.run_daily(
             generate_daily_summaries,
-            time=__import__(
-                "datetime"
-            ).time(
+            time=time(
                 hour=settings.daily_summary_hour,
                 minute=0,
             ),
             name="daily_summaries",
         )
 
-    # Weekly summaries.
+    # ---------------------------------------------
+    # Weekly summaries
+    # ---------------------------------------------
+
     if settings.weekly_summary_enabled:
         weekday_map = {
             "monday": 0,
@@ -83,15 +89,11 @@ async def post_init(
 
         job_queue.run_daily(
             generate_weekly_summaries,
-            time=__import__(
-                "datetime"
-            ).time(
+            time=time(
                 hour=settings.weekly_summary_hour,
                 minute=0,
             ),
-            days=(
-                weekday,
-            ),
+            days=(weekday,),
             name="weekly_summaries",
         )
 
@@ -127,14 +129,22 @@ def build_application() -> Application:
         .build()
     )
 
+    # Commands
     register_command_handlers(
         application
     )
 
+    # Admin settings
+    register_admin_handlers(
+        application
+    )
+
+    # Inline buttons
     register_callback_handlers(
         application
     )
 
+    # Group messages and AI moderation
     register_message_handlers(
         application
     )
