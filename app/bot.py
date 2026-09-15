@@ -7,10 +7,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from telegram import Update
-from telegram.ext import (
-    Application,
-    ApplicationBuilder,
-)
+from telegram.ext import Application, ApplicationBuilder
 
 from app.config import get_settings
 from app.db.base import Base
@@ -26,39 +23,27 @@ from app.services.summaries import (
     generate_weekly_summaries,
 )
 
-
 logger = logging.getLogger(__name__)
-
 
 telegram_application: Application | None = None
 
 
 async def initialize_database() -> None:
     async with engine.begin() as connection:
-        await connection.run_sync(
-            Base.metadata.create_all
-        )
+        await connection.run_sync(Base.metadata.create_all)
 
 
-async def post_init(
-    application: Application,
-) -> None:
-    logger.info(
-        "Initializing database..."
-    )
+async def post_init(application: Application) -> None:
+    logger.info("Initializing database...")
 
     await initialize_database()
 
-    logger.info(
-        "Database initialized."
-    )
+    logger.info("Database initialized.")
 
     job_queue = application.job_queue
 
     if job_queue is None:
-        logger.warning(
-            "Job queue is unavailable."
-        )
+        logger.warning("Job queue is unavailable.")
         return
 
     settings = get_settings()
@@ -99,25 +84,17 @@ async def post_init(
             name="weekly_summaries",
         )
 
-    logger.info(
-        "Scheduled jobs configured."
-    )
+    logger.info("Scheduled jobs configured.")
 
 
-async def post_shutdown(
-    application: Application,
-) -> None:
+async def post_shutdown(application: Application) -> None:
     from app.db.session import close_database
 
-    logger.info(
-        "Closing database connection..."
-    )
+    logger.info("Closing database connection...")
 
     await close_database()
 
-    logger.info(
-        "Database connection closed."
-    )
+    logger.info("Database connection closed.")
 
 
 def build_application() -> Application:
@@ -131,27 +108,36 @@ def build_application() -> Application:
         .build()
     )
 
-    register_command_handlers(
-        application
-    )
-
-    register_admin_handlers(
-        application
-    )
-
-    register_stats_handlers(
-        application
-    )
-
-    register_callback_handlers(
-        application
-    )
-
-    register_message_handlers(
-        application
-    )
+    register_command_handlers(application)
+    register_admin_handlers(application)
+    register_stats_handlers(application)
+    register_callback_handlers(application)
+    register_message_handlers(application)
 
     return application
+
+
+def get_webhook_url() -> str:
+    settings = get_settings()
+
+    if settings.webhook_url:
+        return settings.webhook_url.rstrip("/")
+
+    render_external_url = os.getenv(
+        "RENDER_EXTERNAL_URL",
+        "",
+    ).strip()
+
+    if render_external_url:
+        return (
+            render_external_url.rstrip("/")
+            + "/telegram/webhook"
+        )
+
+    raise RuntimeError(
+        "WEBHOOK_URL is not configured and "
+        "RENDER_EXTERNAL_URL is unavailable."
+    )
 
 
 async def startup() -> None:
@@ -159,31 +145,21 @@ async def startup() -> None:
 
     settings = get_settings()
 
-    setup_logging(
-        settings.log_level
-    )
+    setup_logging(settings.log_level)
 
     logger.info(
-        "Starting Telegram AI Moderator "
-        "webhook service..."
+        "Starting Telegram AI Moderator webhook service..."
     )
 
-    telegram_application = (
-        build_application()
-    )
+    telegram_application = build_application()
 
     await telegram_application.initialize()
 
+    await post_init(telegram_application)
+
     await telegram_application.start()
 
-    webhook_url = (
-        settings.webhook_url
-    )
-
-    if not webhook_url:
-        raise RuntimeError(
-            "WEBHOOK_URL is not configured."
-        )
+    webhook_url = get_webhook_url()
 
     await telegram_application.bot.set_webhook(
         url=webhook_url,
@@ -195,8 +171,7 @@ async def startup() -> None:
     )
 
     logger.info(
-        "Telegram webhook configured: %s",
-        webhook_url,
+        "Telegram webhook configured successfully."
     )
 
 
@@ -213,9 +188,28 @@ async def shutdown() -> None:
             "Failed to delete Telegram webhook."
         )
 
-    await telegram_application.stop()
+    try:
+        await telegram_application.stop()
+    except Exception:
+        logger.exception(
+            "Failed to stop Telegram application."
+        )
 
-    await telegram_application.shutdown()
+    try:
+        await post_shutdown(
+            telegram_application
+        )
+    except Exception:
+        logger.exception(
+            "Failed during application shutdown."
+        )
+
+    try:
+        await telegram_application.shutdown()
+    except Exception:
+        logger.exception(
+            "Failed to shutdown Telegram application."
+        )
 
     telegram_application = None
 
@@ -223,9 +217,7 @@ async def shutdown() -> None:
 async def health_check(
     request: Request,
 ) -> PlainTextResponse:
-    return PlainTextResponse(
-        "OK"
-    )
+    return PlainTextResponse("OK")
 
 
 async def telegram_webhook(
@@ -257,9 +249,7 @@ async def telegram_webhook(
             update
         )
 
-        return PlainTextResponse(
-            "OK"
-        )
+        return PlainTextResponse("OK")
 
     except Exception:
         logger.exception(
