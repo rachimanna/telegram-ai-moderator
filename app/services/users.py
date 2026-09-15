@@ -26,12 +26,17 @@ async def get_or_create_user(
         )
 
         session.add(user)
+
         await session.flush()
 
         return user
 
     user.username = username
-    user.display_name = display_name
+
+    if display_name.strip():
+        user.display_name = (
+            display_name.strip()
+        )
 
     await session.flush()
 
