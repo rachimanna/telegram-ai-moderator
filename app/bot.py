@@ -13,6 +13,7 @@ from app.handlers.admin import register_admin_handlers
 from app.handlers.callbacks import register_callback_handlers
 from app.handlers.commands import register_command_handlers
 from app.handlers.messages import register_message_handlers
+from app.handlers.stats import register_stats_handlers
 from app.logging_setup import setup_logging
 from app.services.summaries import (
     generate_daily_summaries,
@@ -53,10 +54,7 @@ async def post_init(
 
     settings = get_settings()
 
-    # ---------------------------------------------
     # Daily summaries
-    # ---------------------------------------------
-
     if settings.daily_summary_enabled:
         job_queue.run_daily(
             generate_daily_summaries,
@@ -67,10 +65,7 @@ async def post_init(
             name="daily_summaries",
         )
 
-    # ---------------------------------------------
     # Weekly summaries
-    # ---------------------------------------------
-
     if settings.weekly_summary_enabled:
         weekday_map = {
             "monday": 0,
@@ -129,22 +124,27 @@ def build_application() -> Application:
         .build()
     )
 
-    # Commands
+    # Основные команды
     register_command_handlers(
         application
     )
 
-    # Admin settings
+    # Админские настройки
     register_admin_handlers(
         application
     )
 
-    # Inline buttons
+    # Статистика
+    register_stats_handlers(
+        application
+    )
+
+    # Inline-кнопки
     register_callback_handlers(
         application
     )
 
-    # Group messages and AI moderation
+    # Сообщения и AI-модерация
     register_message_handlers(
         application
     )
