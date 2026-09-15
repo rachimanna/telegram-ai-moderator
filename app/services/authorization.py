@@ -1,79 +1,147 @@
-from enum import IntEnum
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import GroupRole
+from app.db.models import User
 
 
-class RoleLevel(IntEnum):
-    USER = 0
-    MODERATOR = 1
-    ADMIN = 2
-    OWNER = 3
+ROLE_USER = "user"
+ROLE_MODERATOR = "moderator"
+ROLE_ADMIN = "admin"
+ROLE_OWNER = "owner"
 
 
 ROLE_LEVELS = {
-    "user": RoleLevel.USER,
-    "moderator": RoleLevel.MODERATOR,
-    "admin": RoleLevel.ADMIN,
-    "owner": RoleLevel.OWNER,
+    ROLE_USER: 0,
+    ROLE_MODERATOR: 1,
+    ROLE_ADMIN: 2,
+    ROLE_OWNER: 3,
 }
 
 
-def normalize_role(role: str | None) -> str:
+def normalize_role(
+    role: str | None,
+) -> str:
     if not role:
-        return "user"
+        return ROLE_USER
 
     role = role.lower().strip()
 
     if role not in ROLE_LEVELS:
-        return "user"
+        return ROLE_USER
 
     return role
 
 
-async def get_stored_role(
+def has_role(
+    user_role: str | None,
+    required_role: str,
+) -> bool:
+    current = normalize_role(
+        user_role
+    )
+
+    required = normalize_role(
+        required_role
+    )
+
+    return (
+        ROLE_LEVELS[current]
+        >= ROLE_LEVELS[required]
+    )
+
+
+def is_moderator(
+    user_role: str | None,
+) -> bool:
+    return has_role(
+        user_role,
+        ROLE_MODERATOR,
+    )
+
+
+def is_admin(
+    user_role: str | None,
+) -> bool:
+    return has_role(
+        user_role,
+        ROLE_ADMIN,
+    )
+
+
+def is_owner(
+    user_role: str | None,
+) -> bool:
+    return has_role(
+        user_role,
+        ROLE_OWNER,
+    )
+
+
+async def get_user_by_telegram_id(
     session: AsyncSession,
-    group_id: int,
-    user_id: int,
-) -> str:
+    telegram_id: int,
+) -> User | None:
     result = await session.execute(
-        select(GroupRole.role).where(
-            GroupRole.group_id == group_id,
-            GroupRole.user_id == user_id,
+        select(User).where(
+            User.telegram_id == telegram_id
         )
     )
 
-    role = result.scalar_one_or_none()
-
-    return normalize_role(role)
+    return result.scalar_one_or_none()
 
 
-def has_permission(
-    current_role: str,
+async def get_user_role(
+    session: AsyncSession,
+    telegram_id: int,
+) -> str:
+    user = await get_user_by_telegram_id(
+        session,
+        telegram_id,
+    )
+
+    if user is None:
+        return ROLE_USER
+
+    return normalize_role(
+        getattr(user, "role", None)
+    )
+
+
+async def set_user_role(
+    session: AsyncSession,
+    telegram_id: int,
+    role: str,
+) -> User:
+    role = normalize_role(role)
+
+    user = await get_user_by_telegram_id(
+        session,
+        telegram_id,
+    )
+
+    if user is None:
+        raise ValueError(
+            "Пользователь не найден."
+        )
+
+    user.role = role
+
+    await session.flush()
+
+    return user
+
+
+async def require_role(
+    session: AsyncSession,
+    telegram_id: int,
     required_role: str,
 ) -> bool:
-    current = ROLE_LEVELS.get(
-        normalize_role(current_role),
-        RoleLevel.USER,
+    role = await get_user_role(
+        session,
+        telegram_id,
     )
 
-    required = ROLE_LEVELS.get(
-        normalize_role(required_role),
-        RoleLevel.USER,
+    return has_role(
+        role,
+        required_role,
     )
-
-    return current >= required
-
-
-def can_moderate(role: str) -> bool:
-    return has_permission(role, "moderator")
-
-
-def can_manage_settings(role: str) -> bool:
-    return has_permission(role, "admin")
-
-
-def can_manage_roles(role: str) -> bool:
-    return has_permission(role, "owner")
