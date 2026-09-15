@@ -9,7 +9,12 @@ from telegram.error import TelegramError
 
 from app.ai.openai_compatible import create_ai_provider
 from app.ai.prompts import build_moderation_prompt
-from app.db.models import Group, Message, ModerationLog, Warning
+from app.db.models import (
+    Group,
+    Message,
+    ModerationLog,
+    Warning,
+)
 from app.moderation.classifier import (
     ModerationResult,
     parse_moderation_result,
@@ -29,10 +34,12 @@ logger = logging.getLogger(__name__)
 
 
 MESSAGE_WINDOW = timedelta(seconds=60)
+
 FLOOD_WARNING_LIMIT = 10
 FLOOD_RESTRICT_LIMIT = 20
 
 REPEAT_WINDOW = timedelta(minutes=10)
+
 REPEAT_WARNING_LIMIT = 3
 REPEAT_RESTRICT_LIMIT = 5
 
@@ -43,7 +50,9 @@ _recent_messages: dict[
 ] = defaultdict(deque)
 
 
-def normalize_text(text: str) -> str:
+def normalize_text(
+    text: str,
+) -> str:
     return " ".join(
         text.lower().split()
     ).strip()
@@ -66,31 +75,41 @@ def register_local_message(
     while history:
         timestamp, _ = history[0]
 
-        if now - timestamp <= REPEAT_WINDOW:
+        if (
+            now - timestamp
+            <= REPEAT_WINDOW
+        ):
             break
 
         history.popleft()
 
+    normalized = normalize_text(
+        text
+    )
+
     history.append(
         (
             now,
-            normalize_text(text),
+            normalized,
         )
     )
 
     flood_count = sum(
         1
         for timestamp, _ in history
-        if now - timestamp <= MESSAGE_WINDOW
+        if (
+            now - timestamp
+            <= MESSAGE_WINDOW
+        )
     )
-
-    normalized = normalize_text(text)
 
     repeat_count = sum(
         1
         for _, previous_text in history
-        if previous_text == normalized
-        and normalized
+        if (
+            previous_text == normalized
+            and normalized
+        )
     )
 
     return (
@@ -104,11 +123,16 @@ def cleanup_local_state() -> None:
 
     empty_keys = []
 
-    for key, history in _recent_messages.items():
+    for key, history in (
+        _recent_messages.items()
+    ):
         while history:
             timestamp, _ = history[0]
 
-            if now - timestamp <= REPEAT_WINDOW:
+            if (
+                now - timestamp
+                <= REPEAT_WINDOW
+            ):
                 break
 
             history.popleft()
@@ -134,7 +158,9 @@ async def get_group(
         )
     )
 
-    group = result.scalar_one_or_none()
+    group = (
+        result.scalar_one_or_none()
+    )
 
     if group is None:
         group = Group(
@@ -160,9 +186,11 @@ async def is_telegram_admin(
     user_id: int,
 ) -> bool:
     try:
-        member = await context.bot.get_chat_member(
-            chat_id,
-            user_id,
+        member = (
+            await context.bot.get_chat_member(
+                chat_id,
+                user_id,
+            )
         )
 
         return member.status in {
@@ -336,6 +364,7 @@ async def moderate_message(
     chat_title: str,
     user_id: int,
     username: str,
+    display_name: str,
     telegram_message_id: int,
     text: str,
 ) -> str:
@@ -350,25 +379,21 @@ async def moderate_message(
         group,
     )
 
-    telegram_username = (
-        username.lstrip("@")
-        if username.startswith("@")
-        else None
-    )
-
-    display_name = username
-
     telegram_user = await get_or_create_user(
         session,
         telegram_id=user_id,
-        username=telegram_username,
+        username=username.lstrip("@")
+        if username.startswith("@")
+        else None,
         display_name=display_name,
     )
 
     message = Message(
         group_id=group.id,
         user_id=telegram_user.id,
-        telegram_message_id=telegram_message_id,
+        telegram_message_id=(
+            telegram_message_id
+        ),
         text=text,
     )
 
@@ -408,7 +433,10 @@ async def moderate_message(
         )
     )
 
-    if flood_count >= FLOOD_RESTRICT_LIMIT:
+    if (
+        flood_count
+        >= FLOOD_RESTRICT_LIMIT
+    ):
         deleted = await delete_message(
             context,
             chat_id,
@@ -459,7 +487,10 @@ async def moderate_message(
             else "delete"
         )
 
-    if flood_count >= FLOOD_WARNING_LIMIT:
+    if (
+        flood_count
+        >= FLOOD_WARNING_LIMIT
+    ):
         warning_count = await create_warning(
             session,
             group.id,
@@ -488,7 +519,10 @@ async def moderate_message(
 
         return "warn"
 
-    if repeat_count >= REPEAT_RESTRICT_LIMIT:
+    if (
+        repeat_count
+        >= REPEAT_RESTRICT_LIMIT
+    ):
         deleted = await delete_message(
             context,
             chat_id,
@@ -503,8 +537,8 @@ async def moderate_message(
         )
 
         reason = (
-            "Обнаружено многократное повторение "
-            "одинаковых сообщений."
+            "Обнаружено многократное "
+            "повторение одинаковых сообщений."
         )
 
         await increment_violation_count(
@@ -540,7 +574,10 @@ async def moderate_message(
             else "delete"
         )
 
-    if repeat_count >= REPEAT_WARNING_LIMIT:
+    if (
+        repeat_count
+        >= REPEAT_WARNING_LIMIT
+    ):
         await create_warning(
             session,
             group.id,
