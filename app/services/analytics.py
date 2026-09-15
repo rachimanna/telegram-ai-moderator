@@ -3,7 +3,11 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import GroupStat, Message, ModerationLog
+from app.db.models import (
+    GroupStat,
+    Message,
+    ModerationLog,
+)
 
 
 async def get_or_create_daily_stat(
@@ -49,6 +53,46 @@ async def increment_message_count(
     )
 
     stat.message_count += 1
+
+
+async def increment_active_user(
+    session: AsyncSession,
+    group_id: int,
+    user_id: int,
+) -> None:
+    stat = await get_or_create_daily_stat(
+        session,
+        group_id,
+    )
+
+    today = stat.day
+
+    start_time = datetime(
+        today.year,
+        today.month,
+        today.day,
+    )
+
+    end_time = start_time + timedelta(days=1)
+
+    result = await session.execute(
+        select(
+            func.count(
+                func.distinct(Message.user_id)
+            )
+        ).where(
+            Message.group_id == group_id,
+            Message.created_at >= start_time,
+            Message.created_at < end_time,
+            Message.user_id.is_not(None),
+        )
+    )
+
+    active_users = int(
+        result.scalar_one() or 0
+    )
+
+    stat.active_users = active_users
 
 
 async def increment_violation_count(
@@ -112,7 +156,9 @@ async def get_statistics(
         .order_by(GroupStat.day.asc())
     )
 
-    return list(result.scalars().all())
+    return list(
+        result.scalars().all()
+    )
 
 
 async def get_total_message_count(
@@ -120,16 +166,26 @@ async def get_total_message_count(
     group_id: int,
     days: int = 7,
 ) -> int:
-    start_time = datetime.utcnow() - timedelta(days=days)
+    if days < 1:
+        days = 1
+
+    start_time = (
+        datetime.utcnow()
+        - timedelta(days=days)
+    )
 
     result = await session.execute(
-        select(func.count(Message.id)).where(
+        select(
+            func.count(Message.id)
+        ).where(
             Message.group_id == group_id,
             Message.created_at >= start_time,
         )
     )
 
-    return int(result.scalar_one() or 0)
+    return int(
+        result.scalar_one() or 0
+    )
 
 
 async def get_total_moderation_actions(
@@ -137,13 +193,23 @@ async def get_total_moderation_actions(
     group_id: int,
     days: int = 7,
 ) -> int:
-    start_time = datetime.utcnow() - timedelta(days=days)
+    if days < 1:
+        days = 1
+
+    start_time = (
+        datetime.utcnow()
+        - timedelta(days=days)
+    )
 
     result = await session.execute(
-        select(func.count(ModerationLog.id)).where(
+        select(
+            func.count(ModerationLog.id)
+        ).where(
             ModerationLog.group_id == group_id,
             ModerationLog.created_at >= start_time,
         )
     )
 
-    return int(result.scalar_one() or 0)
+    return int(
+        result.scalar_one() or 0
+    )
