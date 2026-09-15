@@ -141,10 +141,16 @@ async def handle_group_message(
         bot_username,
     )
 
-    username = (
-        f"@{user.username}"
+    telegram_username = (
+        user.username
         if user.username
-        else user.full_name
+        else None
+    )
+
+    display_name = (
+        user.full_name
+        or telegram_username
+        or str(user.id)
     )
 
     # AI assistant
@@ -226,7 +232,11 @@ async def handle_group_message(
                     or "Telegram Group"
                 ),
                 user_id=user.id,
-                username=username,
+                username=(
+                    telegram_username
+                    or display_name
+                ),
+                display_name=display_name,
                 telegram_message_id=(
                     message.message_id
                 ),
