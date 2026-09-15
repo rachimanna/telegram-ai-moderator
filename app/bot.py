@@ -6,7 +6,13 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
-from telegram import Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    MenuButtonCommands,
+    Update,
+)
 from telegram.ext import Application, ApplicationBuilder
 
 from app.config import get_settings
@@ -33,12 +39,47 @@ async def initialize_database() -> None:
         await connection.run_sync(Base.metadata.create_all)
 
 
+async def setup_bot_commands(application: Application) -> None:
+    commands = [
+        BotCommand("start", "Запустить бота"),
+        BotCommand("help", "Помощь и список команд"),
+        BotCommand("today", "Что обсуждали сегодня"),
+        BotCommand("stats", "Общая статистика"),
+        BotCommand("top", "Самые активные участники"),
+        BotCommand("activity", "Активность за неделю"),
+        BotCommand("moderation", "Журнал модерации"),
+        BotCommand("settings", "Настройки AI-модерации"),
+    ]
+
+    await application.bot.set_my_commands(
+        commands=commands,
+        scope=BotCommandScopeAllPrivateChats(),
+    )
+
+    await application.bot.set_my_commands(
+        commands=commands,
+        scope=BotCommandScopeAllGroupChats(),
+    )
+
+    await application.bot.set_my_commands(
+        commands=commands,
+    )
+
+    await application.bot.set_chat_menu_button(
+        menu_button=MenuButtonCommands(),
+    )
+
+    logger.info("Telegram bot commands configured.")
+
+
 async def post_init(application: Application) -> None:
     logger.info("Initializing database...")
 
     await initialize_database()
 
     logger.info("Database initialized.")
+
+    await setup_bot_commands(application)
 
     job_queue = application.job_queue
 
