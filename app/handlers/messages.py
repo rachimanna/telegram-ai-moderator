@@ -12,14 +12,18 @@ from telegram.ext import (
 from app.config import get_settings
 from app.db.models import Group
 from app.db.session import SessionLocal
+from app.services.analytics import increment_question_count
 from app.services.assistant import answer_question
 from app.services.moderation import moderate_message
 from app.services.settings import get_or_create_settings
 
+
 logger = logging.getLogger(__name__)
 
 
-def get_message_text(update: Update) -> str:
+def get_message_text(
+    update: Update,
+) -> str:
     message = update.effective_message
 
     if message is None:
@@ -46,14 +50,23 @@ def is_bot_mentioned(
     if not text:
         return False
 
-    username = bot_username.lstrip("@").lower()
+    username = (
+        bot_username
+        .lstrip("@")
+        .lower()
+    )
 
-    pattern = rf"@{re.escape(username)}\b"
+    pattern = (
+        rf"@{re.escape(username)}\b"
+    )
 
-    return re.search(
-        pattern,
-        text.lower(),
-    ) is not None
+    return (
+        re.search(
+            pattern,
+            text.lower(),
+        )
+        is not None
+    )
 
 
 def remove_bot_mention(
@@ -65,7 +78,9 @@ def remove_bot_mention(
 
     username = bot_username.lstrip("@")
 
-    pattern = rf"@{re.escape(username)}\b"
+    pattern = (
+        rf"@{re.escape(username)}\b"
+    )
 
     cleaned = re.sub(
         pattern,
@@ -77,19 +92,6 @@ def remove_bot_mention(
     return cleaned.strip()
 
 
-async def get_group_by_telegram_id(
-    chat_id: int,
-):
-    async with SessionLocal() as session:
-        result = await session.execute(
-            select(Group).where(
-                Group.telegram_id == chat_id
-            )
-        )
-
-        return result.scalar_one_or_none()
-
-
 async def handle_group_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -98,13 +100,11 @@ async def handle_group_message(
     chat = update.effective_chat
     user = update.effective_user
 
-    if message is None:
-        return
-
-    if chat is None:
-        return
-
-    if user is None:
+    if (
+        message is None
+        or chat is None
+        or user is None
+    ):
         return
 
     if chat.type not in {
@@ -121,11 +121,9 @@ async def handle_group_message(
     settings = get_settings()
 
     if len(text) > settings.max_message_length:
-        text = text[:settings.max_message_length]
-
-    # -----------------------------------------------------
-    # Get bot username
-    # -----------------------------------------------------
+        text = (
+            text[:settings.max_message_length]
+        )
 
     bot_username = None
 
@@ -149,10 +147,7 @@ async def handle_group_message(
         else user.full_name
     )
 
-    # -----------------------------------------------------
     # AI assistant
-    # -----------------------------------------------------
-
     if mentioned:
         question = remove_bot_mention(
             text,
@@ -181,6 +176,11 @@ async def handle_group_message(
                         )
 
                         if group_settings.ai_answers_enabled:
+                            await increment_question_count(
+                                session,
+                                group.id,
+                            )
+
                             answer = await answer_question(
                                 session,
                                 group.id,
@@ -214,20 +214,22 @@ async def handle_group_message(
 
                 return
 
-    # -----------------------------------------------------
     # Moderation
-    # -----------------------------------------------------
-
     try:
         async with SessionLocal() as session:
             action = await moderate_message(
                 session,
                 context,
                 chat_id=chat.id,
-                chat_title=chat.title or "Telegram Group",
+                chat_title=(
+                    chat.title
+                    or "Telegram Group"
+                ),
                 user_id=user.id,
                 username=username,
-                telegram_message_id=message.message_id,
+                telegram_message_id=(
+                    message.message_id
+                ),
                 text=text,
             )
 
