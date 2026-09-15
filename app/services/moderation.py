@@ -15,7 +15,9 @@ from app.db.models import Message, ModerationLog, Warning
 from app.moderation.classifier import parse_moderation_result
 from app.moderation.policy import decide_action
 from app.services.analytics import (
+    increment_active_user,
     increment_deleted_count,
+    increment_message_count,
     increment_violation_count,
 )
 from app.services.settings import (
@@ -68,7 +70,6 @@ def remember_message(
     key = (chat_id, user_id)
 
     times = _message_times[key]
-
     times.append(now)
 
     cutoff = now - timedelta(
@@ -192,7 +193,9 @@ async def get_warning_count(
         )
     )
 
-    return int(result.scalar_one() or 0)
+    return int(
+        result.scalar_one() or 0
+    )
 
 
 async def add_warning(
@@ -370,8 +373,11 @@ async def moderate_message(
     """
     Moderate one Telegram message.
 
-    Returns the action that was performed:
-    ignore, warn, delete, restrict.
+    Returns:
+        ignore
+        warn
+        delete
+        restrict
     """
 
     group = await get_or_create_group(
@@ -407,6 +413,22 @@ async def moderate_message(
 
     await session.flush()
 
+    # Update statistics for every stored message.
+    await increment_message_count(
+        session,
+        group.id,
+    )
+
+    await increment_active_user(
+        session,
+        group.id,
+        telegram_user.id,
+    )
+
+    # -----------------------------------------------------
+    # Exceptions
+    # -----------------------------------------------------
+
     if user_id in settings.excluded_user_ids:
         await session.commit()
 
@@ -420,6 +442,10 @@ async def moderate_message(
         await session.commit()
 
         return "ignore"
+
+    # -----------------------------------------------------
+    # Local anti-flood protection
+    # -----------------------------------------------------
 
     now = datetime.utcnow()
 
@@ -520,6 +546,10 @@ async def moderate_message(
 
         return action
 
+    # -----------------------------------------------------
+    # AI moderation
+    # -----------------------------------------------------
+
     if not settings.moderation_enabled:
         await session.commit()
 
@@ -558,6 +588,10 @@ async def moderate_message(
 
     warning_count = 0
 
+    # -----------------------------------------------------
+    # Warning
+    # -----------------------------------------------------
+
     if action == "warn":
         warning_count = await add_warning(
             session,
@@ -578,6 +612,10 @@ async def moderate_message(
         if warning_count >= settings.warning_threshold:
             action = "restrict"
 
+    # -----------------------------------------------------
+    # Delete
+    # -----------------------------------------------------
+
     if action == "delete":
         deleted = await delete_message(
             context,
@@ -592,8 +630,13 @@ async def moderate_message(
                 session,
                 group.id,
             )
+
         else:
             action = "warn"
+
+    # -----------------------------------------------------
+    # Restrict
+    # -----------------------------------------------------
 
     if action == "restrict":
         deleted = await delete_message(
@@ -623,6 +666,10 @@ async def moderate_message(
                 if deleted
                 else "warn"
             )
+
+    # -----------------------------------------------------
+    # Fallback warning
+    # -----------------------------------------------------
 
     if action == "warn" and warning_count == 0:
         warning_count = await add_warning(
