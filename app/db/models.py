@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -371,7 +371,7 @@ class GroupStat(Base):
         index=True,
     )
 
-    day: Mapped[datetime] = mapped_column(
+    day: Mapped[date] = mapped_column(
         Date,
         nullable=False,
         index=True,
