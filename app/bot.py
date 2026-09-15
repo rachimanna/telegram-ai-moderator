@@ -1,6 +1,12 @@
 import logging
+import os
 from datetime import time
 
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
+from telegram import Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -22,6 +28,9 @@ from app.services.summaries import (
 
 
 logger = logging.getLogger(__name__)
+
+
+telegram_application: Application | None = None
 
 
 async def initialize_database() -> None:
@@ -54,7 +63,6 @@ async def post_init(
 
     settings = get_settings()
 
-    # Daily summaries
     if settings.daily_summary_enabled:
         job_queue.run_daily(
             generate_daily_summaries,
@@ -65,7 +73,6 @@ async def post_init(
             name="daily_summaries",
         )
 
-    # Weekly summaries
     if settings.weekly_summary_enabled:
         weekday_map = {
             "monday": 0,
@@ -124,27 +131,22 @@ def build_application() -> Application:
         .build()
     )
 
-    # Основные команды
     register_command_handlers(
         application
     )
 
-    # Админские настройки
     register_admin_handlers(
         application
     )
 
-    # Статистика
     register_stats_handlers(
         application
     )
 
-    # Inline-кнопки
     register_callback_handlers(
         application
     )
 
-    # Сообщения и AI-модерация
     register_message_handlers(
         application
     )
@@ -152,7 +154,9 @@ def build_application() -> Application:
     return application
 
 
-def run() -> None:
+async def startup() -> None:
+    global telegram_application
+
     settings = get_settings()
 
     setup_logging(
@@ -160,15 +164,154 @@ def run() -> None:
     )
 
     logger.info(
-        "Starting Telegram AI Moderator..."
+        "Starting Telegram AI Moderator "
+        "webhook service..."
     )
 
-    application = build_application()
+    telegram_application = (
+        build_application()
+    )
 
-    application.run_polling(
+    await telegram_application.initialize()
+
+    await telegram_application.start()
+
+    webhook_url = (
+        settings.webhook_url
+    )
+
+    if not webhook_url:
+        raise RuntimeError(
+            "WEBHOOK_URL is not configured."
+        )
+
+    await telegram_application.bot.set_webhook(
+        url=webhook_url,
         allowed_updates=[
             "message",
             "callback_query",
         ],
         drop_pending_updates=True,
+    )
+
+    logger.info(
+        "Telegram webhook configured: %s",
+        webhook_url,
+    )
+
+
+async def shutdown() -> None:
+    global telegram_application
+
+    if telegram_application is None:
+        return
+
+    try:
+        await telegram_application.bot.delete_webhook()
+    except Exception:
+        logger.exception(
+            "Failed to delete Telegram webhook."
+        )
+
+    await telegram_application.stop()
+
+    await telegram_application.shutdown()
+
+    telegram_application = None
+
+
+async def health_check(
+    request: Request,
+) -> PlainTextResponse:
+    return PlainTextResponse(
+        "OK"
+    )
+
+
+async def telegram_webhook(
+    request: Request,
+) -> PlainTextResponse:
+    global telegram_application
+
+    if telegram_application is None:
+        return PlainTextResponse(
+            "Bot is not ready.",
+            status_code=503,
+        )
+
+    try:
+        data = await request.json()
+
+        update = Update.de_json(
+            data,
+            telegram_application.bot,
+        )
+
+        if update is None:
+            return PlainTextResponse(
+                "Invalid update.",
+                status_code=400,
+            )
+
+        await telegram_application.process_update(
+            update
+        )
+
+        return PlainTextResponse(
+            "OK"
+        )
+
+    except Exception:
+        logger.exception(
+            "Failed to process Telegram webhook."
+        )
+
+        return PlainTextResponse(
+            "Internal Server Error.",
+            status_code=500,
+        )
+
+
+async def application_lifespan(app):
+    await startup()
+
+    yield
+
+    await shutdown()
+
+
+routes = [
+    Route(
+        "/health",
+        health_check,
+        methods=["GET"],
+    ),
+    Route(
+        "/telegram/webhook",
+        telegram_webhook,
+        methods=["POST"],
+    ),
+]
+
+
+web_app = Starlette(
+    routes=routes,
+    lifespan=application_lifespan,
+)
+
+
+def run() -> None:
+    import uvicorn
+
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000",
+        )
+    )
+
+    uvicorn.run(
+        web_app,
+        host="0.0.0.0",
+        port=port,
     )
