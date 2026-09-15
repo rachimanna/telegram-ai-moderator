@@ -1,6 +1,7 @@
 import logging
 import re
 
+from sqlalchemy import select
 from telegram import Update
 from telegram.ext import (
     ContextTypes,
@@ -9,9 +10,11 @@ from telegram.ext import (
 )
 
 from app.config import get_settings
+from app.db.models import Group
 from app.db.session import SessionLocal
 from app.services.assistant import answer_question
 from app.services.moderation import moderate_message
+from app.services.settings import get_or_create_settings
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +77,19 @@ def remove_bot_mention(
     return cleaned.strip()
 
 
+async def get_group_by_telegram_id(
+    chat_id: int,
+):
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Group).where(
+                Group.telegram_id == chat_id
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+
 async def handle_group_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -107,11 +123,16 @@ async def handle_group_message(
     if len(text) > settings.max_message_length:
         text = text[:settings.max_message_length]
 
+    # -----------------------------------------------------
+    # Get bot username
+    # -----------------------------------------------------
+
     bot_username = None
 
     try:
         me = await context.bot.get_me()
         bot_username = me.username
+
     except Exception:
         logger.exception(
             "Failed to get bot information."
@@ -142,29 +163,16 @@ async def handle_group_message(
             try:
                 async with SessionLocal() as session:
                     result = await session.execute(
-                        __import__(
-                            "sqlalchemy",
-                            fromlist=["select"],
-                        ).select(
-                            __import__(
-                                "app.db.models",
-                                fromlist=["Group"],
-                            ).Group
-                        ).where(
-                            __import__(
-                                "app.db.models",
-                                fromlist=["Group"],
-                            ).Group.telegram_id == chat.id
+                        select(Group).where(
+                            Group.telegram_id == chat.id
                         )
                     )
 
-                    group = result.scalar_one_or_none()
+                    group = (
+                        result.scalar_one_or_none()
+                    )
 
                     if group is not None:
-                        from app.services.settings import (
-                            get_or_create_settings,
-                        )
-
                         group_settings = (
                             await get_or_create_settings(
                                 session,
@@ -195,9 +203,10 @@ async def handle_group_message(
 
                 try:
                     await message.reply_text(
-                        "⚠️ Не удалось обработать запрос. "
-                        "Попробуйте ещё раз позже."
+                        "⚠️ Не удалось обработать "
+                        "запрос. Попробуйте позже."
                     )
+
                 except Exception:
                     logger.exception(
                         "Failed to send AI error message."
@@ -223,7 +232,8 @@ async def handle_group_message(
             )
 
             logger.info(
-                "Message processed: chat=%s user=%s action=%s",
+                "Message processed: "
+                "chat=%s user=%s action=%s",
                 chat.id,
                 user.id,
                 action,
