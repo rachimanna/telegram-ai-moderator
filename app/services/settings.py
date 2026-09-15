@@ -5,6 +5,20 @@ from app.config import get_settings
 from app.db.models import Group, GroupSettings
 
 
+ALLOWED_STRICTNESS = {
+    "low",
+    "medium",
+    "high",
+}
+
+ALLOWED_ACTIONS = {
+    "warn",
+    "delete",
+    "restrict",
+    "notify",
+}
+
+
 async def get_or_create_group(
     session: AsyncSession,
     telegram_group_id: int,
@@ -25,6 +39,12 @@ async def get_or_create_group(
         )
 
         session.add(group)
+
+        await session.flush()
+
+    elif group.title != title:
+        group.title = title
+
         await session.flush()
 
     return group
@@ -55,7 +75,9 @@ async def get_or_create_settings(
         ai_answers_enabled=(
             app_settings.default_ai_answers_enabled
         ),
-        strictness=app_settings.default_strictness,
+        strictness=(
+            app_settings.default_strictness
+        ),
         moderation_action=(
             app_settings.default_moderation_action
         ),
@@ -102,12 +124,63 @@ async def update_settings(
     }
 
     for field, value in changes.items():
-        if field in allowed_fields:
-            setattr(
-                settings,
-                field,
-                value,
-            )
+        if field not in allowed_fields:
+            continue
+
+        if field == "strictness":
+            if value not in ALLOWED_STRICTNESS:
+                raise ValueError(
+                    "Недопустимый уровень строгости."
+                )
+
+        if field == "moderation_action":
+            if value not in ALLOWED_ACTIONS:
+                raise ValueError(
+                    "Недопустимое действие модерации."
+                )
+
+        if field == "warning_threshold":
+            try:
+                value = int(value)
+            except (
+                TypeError,
+                ValueError,
+            ):
+                raise ValueError(
+                    "Порог предупреждений должен быть числом."
+                )
+
+            if not 1 <= value <= 20:
+                raise ValueError(
+                    "Порог предупреждений должен быть "
+                    "от 1 до 20."
+                )
+
+        if field in {
+            "moderation_enabled",
+            "ai_answers_enabled",
+            "daily_summary_enabled",
+            "weekly_summary_enabled",
+        }:
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"{field} должен быть True или False."
+                )
+
+        if field in {
+            "excluded_user_ids",
+            "excluded_words",
+        }:
+            if not isinstance(value, list):
+                raise ValueError(
+                    f"{field} должен быть списком."
+                )
+
+        setattr(
+            settings,
+            field,
+            value,
+        )
 
     await session.flush()
 
