@@ -50,11 +50,9 @@ def is_bot_mentioned(
     if not text:
         return False
 
-    username = (
-        bot_username
-        .lstrip("@")
-        .lower()
-    )
+    username = bot_username.lstrip(
+        "@"
+    ).lower()
 
     pattern = (
         rf"@{re.escape(username)}\b"
@@ -76,7 +74,9 @@ def remove_bot_mention(
     if not bot_username:
         return text.strip()
 
-    username = bot_username.lstrip("@")
+    username = bot_username.lstrip(
+        "@"
+    )
 
     pattern = (
         rf"@{re.escape(username)}\b"
@@ -121,14 +121,15 @@ async def handle_group_message(
     settings = get_settings()
 
     if len(text) > settings.max_message_length:
-        text = (
-            text[:settings.max_message_length]
-        )
+        text = text[
+            :settings.max_message_length
+        ]
 
     bot_username = None
 
     try:
         me = await context.bot.get_me()
+
         bot_username = me.username
 
     except Exception:
@@ -165,7 +166,8 @@ async def handle_group_message(
                 async with SessionLocal() as session:
                     result = await session.execute(
                         select(Group).where(
-                            Group.telegram_id == chat.id
+                            Group.telegram_id
+                            == chat.id
                         )
                     )
 
@@ -181,16 +183,21 @@ async def handle_group_message(
                             )
                         )
 
-                        if group_settings.ai_answers_enabled:
+                        if (
+                            group_settings
+                            .ai_answers_enabled
+                        ):
                             await increment_question_count(
                                 session,
                                 group.id,
                             )
 
-                            answer = await answer_question(
-                                session,
-                                group.id,
-                                question,
+                            answer = (
+                                await answer_question(
+                                    session,
+                                    group.id,
+                                    question,
+                                )
                             )
 
                             await session.commit()
@@ -209,8 +216,8 @@ async def handle_group_message(
 
                 try:
                     await message.reply_text(
-                        "⚠️ Не удалось обработать "
-                        "запрос. Попробуйте позже."
+                        "⚠️ Не удалось обработать запрос. "
+                        "Попробуйте позже."
                     )
 
                 except Exception:
@@ -234,7 +241,7 @@ async def handle_group_message(
                 user_id=user.id,
                 username=(
                     telegram_username
-                    or display_name
+                    or ""
                 ),
                 display_name=display_name,
                 telegram_message_id=(
