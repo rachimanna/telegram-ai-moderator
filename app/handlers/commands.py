@@ -1,16 +1,16 @@
 import logging
-from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from telegram import Update
 from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
 
-from app.db.models import Group, Message, ModerationLog, User
+from app.db.models import Group
 from app.db.session import SessionLocal
 from app.services.assistant import answer_today_question
+
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,20 @@ async def start_command(
     message = update.effective_message
 
     if message is None:
+        logger.warning(
+            "Received /start without effective message."
+        )
         return
+
+    logger.info(
+        "Processing /start from user_id=%s chat_id=%s",
+        update.effective_user.id
+        if update.effective_user
+        else None,
+        update.effective_chat.id
+        if update.effective_chat
+        else None,
+    )
 
     await message.reply_text(
         "👋 Привет!\n\n"
