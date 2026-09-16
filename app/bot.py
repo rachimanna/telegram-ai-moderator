@@ -49,6 +49,8 @@ async def setup_bot_commands(application: Application) -> None:
         BotCommand("activity", "Активность за неделю"),
         BotCommand("moderation", "Журнал модерации"),
         BotCommand("settings", "Настройки AI-модерации"),
+        BotCommand("mute", "Замьютить (ответом на сообщение)"),
+        BotCommand("unmute", "Снять мут (ответом на сообщение)"),
     ]
 
     await application.bot.set_my_commands(
