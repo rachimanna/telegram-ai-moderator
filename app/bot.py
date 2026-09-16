@@ -261,3 +261,4 @@ def run() -> None:
 
         application.run_polling(
             allowed_updates=["message", "callback_query"],
+        )
