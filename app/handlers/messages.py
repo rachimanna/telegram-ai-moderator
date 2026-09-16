@@ -56,29 +56,38 @@ async def answer_bot_mention(
 ) -> None:
     try:
         async with SessionLocal() as session:
-            group = await get_or_create_group(
-                session,
-                telegram_group_id=chat_id,
-                title="Telegram Group",
-            )
+            try:
+                group = await get_or_create_group(
+                    session,
+                    telegram_group_id=chat_id,
+                    title="Telegram Group",
+                )
 
-            settings = await get_or_create_settings(
-                session,
-                group,
-            )
+                settings = await get_or_create_settings(
+                    session,
+                    group,
+                )
 
-            if not settings.ai_answers_enabled:
+                if not settings.ai_answers_enabled:
+                    await session.commit()
+
+                    return
+
+                answer = await answer_question(
+                    session,
+                    group.id,
+                    question,
+                )
+
                 await session.commit()
 
-                return
-
-            answer = await answer_question(
-                session,
-                group.id,
-                question,
-            )
-
-            await session.commit()
+            except Exception as db_error:
+                logger.error(
+                    f"Database error in answer_bot_mention: {db_error}",
+                    exc_info=True,
+                )
+                await session.rollback()
+                raise
 
         await context.bot.send_message(
             chat_id=chat_id,
@@ -100,55 +109,61 @@ async def handle_message(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     message = update.effective_message
+
+    if message is None:
+        return
+
     chat = update.effective_chat
+
+    if chat is None:
+        return
+
     user = update.effective_user
 
-    if message is None or chat is None or user is None:
+    if user is None:
         return
 
-    if chat.type not in {
-        "group",
-        "supergroup",
-    }:
-        return
-
-    text = message.text or message.caption or ""
-
-    if not text.strip():
-        return
-
-    username = user.username or ""
-    display_name = user.full_name or username or "Пользователь"
-
-    chat_title = (
-        chat.title
-        or "Без названия"
+    text = (
+        message.text
+        or message.caption
+        or ""
     )
 
-    action = None
+    if not text:
+        return
+
+    if len(text) > 4000:
+        text = text[:4000]
 
     try:
         async with SessionLocal() as session:
-            action = await moderate_message(
-                session=session,
-                context=context,
-                chat_id=chat.id,
-                chat_title=chat_title,
-                user_id=user.id,
-                username=username,
-                display_name=display_name,
-                telegram_message_id=message.message_id,
-                text=text,
-            )
+            try:
+                action = await moderate_message(
+                    session=session,
+                    context=context,
+                    chat_id=chat.id,
+                    chat_title=chat.title or "Telegram Group",
+                    user_id=user.id,
+                    username=user.username or "",
+                    display_name=(
+                        user.first_name
+                        + (
+                            f" {user.last_name}"
+                            if user.last_name
+                            else ""
+                        )
+                    ),
+                    telegram_message_id=message.message_id,
+                    text=text,
+                )
 
-            logger.info(
-                "Message processed: "
-                "chat=%s user=%s message=%s action=%s",
-                chat.id,
-                user.id,
-                message.message_id,
-                action,
-            )
+            except Exception as mod_error:
+                logger.error(
+                    f"Moderation error: {mod_error}",
+                    exc_info=True,
+                )
+                await session.rollback()
+                action = "allowed"
 
     except Exception:
         logger.exception(
@@ -161,8 +176,6 @@ async def handle_message(
 
         return
 
-    # Message was deleted/restricted by moderation —
-    # nothing further to do with it.
     if action in {"delete", "restrict"}:
         return
 
