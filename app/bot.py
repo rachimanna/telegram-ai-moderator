@@ -172,7 +172,7 @@ async def health_check(request: Request) -> PlainTextResponse:
 def setup_starlette_app() -> Starlette:
     """Create and configure Starlette application for webhooks."""
     routes = [
-        Route("/webhook", webhook_handler, methods=["POST"]),
+        Route("/telegram/webhook", webhook_handler, methods=["POST"]),
         Route("/health", health_check, methods=["GET"]),
     ]
 
