@@ -222,12 +222,12 @@ async def shutdown() -> None:
     if telegram_application is None:
         return
 
-    try:
-        await telegram_application.bot.delete_webhook()
-    except Exception:
-        logger.exception(
-            "Failed to delete Telegram webhook."
-        )
+    # Do NOT delete the webhook here.
+    # This shutdown runs on every deploy/restart and on
+    # Render free-tier spin-down. Deleting the webhook on
+    # shutdown breaks the bot until the next deploy, because
+    # the webhook is shared by the bot token, not tied to a
+    # single instance. set_webhook() at startup is enough.
 
     try:
         await telegram_application.stop()
