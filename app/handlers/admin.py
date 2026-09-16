@@ -1,10 +1,13 @@
 import logging
+from datetime import datetime, timedelta
 
 from telegram import (
+    ChatPermissions,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
 )
+from telegram.error import TelegramError
 from telegram.ext import (
     CommandHandler,
     ContextTypes,
@@ -371,6 +374,193 @@ async def admin_callback(
         )
 
 
+async def unmute_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+
+    if message is None or chat is None:
+        return
+
+    if not await is_admin(
+        update,
+        context,
+    ):
+        await message.reply_text(
+            "⛔ Только администраторы группы "
+            "могут снимать ограничения."
+        )
+        return
+
+    target = (
+        message.reply_to_message.from_user
+        if message.reply_to_message
+        else None
+    )
+
+    if target is None:
+        await message.reply_text(
+            "Ответь этой командой на сообщение "
+            "пользователя, которого нужно размьютить."
+        )
+        return
+
+    full_permissions = ChatPermissions(
+        can_send_messages=True,
+        can_send_audios=True,
+        can_send_documents=True,
+        can_send_photos=True,
+        can_send_videos=True,
+        can_send_video_notes=True,
+        can_send_voice_notes=True,
+        can_send_polls=True,
+        can_send_other_messages=True,
+        can_add_web_page_previews=True,
+        can_change_info=False,
+        can_invite_users=True,
+        can_pin_messages=False,
+        can_manage_topics=False,
+    )
+
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=chat.id,
+            user_id=target.id,
+            permissions=full_permissions,
+        )
+
+    except TelegramError:
+        logger.exception(
+            "Failed to unmute user: "
+            "chat=%s user=%s",
+            chat.id,
+            target.id,
+        )
+
+        await message.reply_text(
+            "Не получилось снять ограничение — "
+            "проверь, что у бота есть права "
+            "администратора (Restrict members)."
+        )
+
+        return
+
+    display_name = (
+        target.full_name
+        or target.username
+        or str(target.id)
+    )
+
+    await message.reply_text(
+        f"✅ С {display_name} сняты ограничения."
+    )
+
+
+async def mute_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+
+    if message is None or chat is None:
+        return
+
+    if not await is_admin(
+        update,
+        context,
+    ):
+        await message.reply_text(
+            "⛔ Только администраторы группы "
+            "могут ограничивать участников."
+        )
+        return
+
+    target = (
+        message.reply_to_message.from_user
+        if message.reply_to_message
+        else None
+    )
+
+    if target is None:
+        await message.reply_text(
+            "Ответь этой командой на сообщение "
+            "пользователя, которого нужно замьютить. "
+            "Можно указать минуты: /mute 30 "
+            "(по умолчанию — 10)."
+        )
+        return
+
+    minutes = 10
+
+    if context.args:
+        try:
+            minutes = max(
+                1,
+                int(context.args[0]),
+            )
+        except ValueError:
+            pass
+
+    until_date = (
+        datetime.utcnow()
+        + timedelta(minutes=minutes)
+    )
+
+    restricted_permissions = ChatPermissions(
+        can_send_messages=False,
+        can_send_audios=False,
+        can_send_documents=False,
+        can_send_photos=False,
+        can_send_videos=False,
+        can_send_video_notes=False,
+        can_send_voice_notes=False,
+        can_send_polls=False,
+        can_send_other_messages=False,
+        can_add_web_page_previews=False,
+        can_change_info=False,
+        can_invite_users=False,
+        can_pin_messages=False,
+        can_manage_topics=False,
+    )
+
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=chat.id,
+            user_id=target.id,
+            permissions=restricted_permissions,
+            until_date=until_date,
+        )
+
+    except TelegramError:
+        logger.exception(
+            "Failed to mute user: "
+            "chat=%s user=%s",
+            chat.id,
+            target.id,
+        )
+
+        await message.reply_text(
+            "Не получилось замьютить — "
+            "проверь, что у бота есть права "
+            "администратора (Restrict members)."
+        )
+
+        return
+
+    display_name = (
+        target.full_name
+        or target.username
+        or str(target.id)
+    )
+
+    await message.reply_text(
+        f"🔇 {display_name} замьючен на {minutes} мин."
+    )
+
+
 def register_admin_handlers(
     application,
 ) -> None:
@@ -378,6 +568,20 @@ def register_admin_handlers(
         CommandHandler(
             "settings",
             settings_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "unmute",
+            unmute_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "mute",
+            mute_command,
         )
     )
 
