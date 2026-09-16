@@ -643,10 +643,16 @@ async def moderate_message(
         group.id,
     )
 
-    action = decide_action(
-        settings=settings,
+    decision = decide_action(
+        violation=result.violation,
+        category=result.category,
         severity=result.severity,
+        confidence=result.confidence,
+        strictness=settings.strictness,
+        configured_action=settings.moderation_action,
     )
+
+    action = decision.action
 
     if action == "warn":
         warning_count = await create_warning(
