@@ -10,9 +10,36 @@ from telegram.ext import (
 from app.db.models import Group
 from app.db.session import SessionLocal
 from app.services.assistant import answer_today_question
+from app.services.notifications import get_recent_notifications
 
 
 logger = logging.getLogger(__name__)
+
+
+NOTIFICATIONS_WINDOW_HOURS = 24
+NOTIFICATIONS_LIMIT = 10
+
+ACTION_LABELS = {
+    "warn": "⚠️ Предупреждение",
+    "delete": "🗑 Удаление сообщения",
+    "restrict": "🔇 Ограничение (мут)",
+    "notify": "🔔 Уведомление",
+}
+
+CATEGORY_LABELS = {
+    "spam": "спам",
+    "advertising": "реклама",
+    "scam": "мошенничество",
+    "harassment": "домогательство",
+    "insult": "оскорбление",
+    "toxicity": "токсичность",
+    "threat": "угроза",
+    "flooding": "флуд",
+    "repetition": "повторы",
+    "harmful": "вредный контент",
+    "suspicious_link": "подозрительная ссылка",
+    "none": "—",
+}
 
 
 async def get_group(
@@ -86,7 +113,8 @@ async def help_command(
         "/stats — общая статистика\n"
         "/top — самые активные участники\n"
         "/activity — активность за неделю\n"
-        "/moderation — журнал модерации\n\n"
+        "/moderation — журнал модерации\n"
+        "/notifications — недавние события модерации\n\n"
         "⚙️ Администратор:\n"
         "/settings — настройки AI-модерации\n"
         "/mute — замьютить (ответом на сообщение, "
@@ -162,6 +190,107 @@ async def today_command(
     )
 
 
+async def notifications_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Показывает недавние "уведомления" — события журнала модерации
+    (предупреждения, удаления, ограничения) за последние 24 часа.
+
+    В проекте нет отдельной таблицы уведомлений с флагом
+    "прочитано/непрочитано" (см. `app.services.notifications`), поэтому в
+    качестве практичной замены используется журнал модерации группы.
+    """
+    message = update.effective_message
+    chat = update.effective_chat
+
+    if message is None or chat is None:
+        return
+
+    if chat.type not in {
+        "group",
+        "supergroup",
+    }:
+        await message.reply_text(
+            "Эта команда работает только в группе."
+        )
+        return
+
+    async with SessionLocal() as session:
+        group = await get_group(
+            session,
+            chat.id,
+        )
+
+        if group is None:
+            await message.reply_text(
+                "🔔 Уведомлений пока нет."
+            )
+            return
+
+        try:
+            notifications = await get_recent_notifications(
+                session,
+                group.id,
+                hours=NOTIFICATIONS_WINDOW_HOURS,
+                limit=NOTIFICATIONS_LIMIT,
+            )
+
+            await session.commit()
+
+        except Exception:
+            await session.rollback()
+
+            logger.exception(
+                "Failed to fetch notifications for group_id=%s.",
+                group.id,
+            )
+
+            await message.reply_text(
+                "⚠️ Не удалось получить уведомления. "
+                "Попробуйте позже."
+            )
+
+            return
+
+    if not notifications:
+        await message.reply_text(
+            "🔔 За последние 24 часа действий модерации не было."
+        )
+        return
+
+    lines = [
+        f"🔔 Последние события модерации "
+        f"(за {NOTIFICATIONS_WINDOW_HOURS} ч.):",
+        "",
+    ]
+
+    for log in notifications:
+        action_label = ACTION_LABELS.get(
+            log.action,
+            log.action,
+        )
+
+        category_label = CATEGORY_LABELS.get(
+            log.category or "none",
+            log.category or "—",
+        )
+
+        timestamp = log.created_at.strftime(
+            "%Y-%m-%d %H:%M"
+        )
+
+        lines.append(
+            f"• {timestamp} — {action_label} "
+            f"({category_label})"
+        )
+
+    await message.reply_text(
+        "\n".join(lines)
+    )
+
+
 async def unknown_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -199,6 +328,13 @@ def register_command_handlers(
         CommandHandler(
             "today",
             today_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "notifications",
+            notifications_command,
         )
     )
 
