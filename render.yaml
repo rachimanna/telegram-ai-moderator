@@ -13,19 +13,10 @@ services:
       - key: PYTHON_VERSION
         value: "3.11"
 
+      # --- Secrets: fill in manually in the Render dashboard ---
+
       - key: BOT_TOKEN
         sync: false
-
-      - key: DATABASE_URL
-        fromDatabase:
-          name: telegram-ai-moderator-db
-          property: connectionString
-
-      - key: WEBHOOK_URL
-        sync: false
-
-      - key: AI_BASE_URL
-        value: https://api.openai.com/v1
 
       - key: AI_API_KEY
         sync: false
@@ -33,11 +24,44 @@ services:
       - key: AI_MODEL
         sync: false
 
+      # WEBHOOK_URL controls the run mode (see app/bot.py):
+      #   - "true"/"1"/"yes"/"on" -> webhook mode, base URL is taken
+      #     automatically from Render's own RENDER_EXTERNAL_URL env var
+      #     (Render injects it into every web service, no setup needed).
+      #   - a real https:// URL -> webhook mode using that exact base URL
+      #     (useful if you serve the bot from a different domain/proxy).
+      #   - empty string -> long-polling mode (an HTTP health server for
+      #     Render's health check is still started in parallel).
+      # Webhook mode is recommended on Render: it avoids keeping an extra
+      # long-lived outbound connection open and reacts faster after the
+      # free-tier instance wakes up from sleep.
+      - key: WEBHOOK_URL
+        value: "true"
+
+      # --- Database (auto-wired to the Postgres instance below) ---
+
+      - key: DATABASE_URL
+        fromDatabase:
+          name: telegram-ai-moderator-db
+          property: connectionString
+
+      # --- AI provider ---
+
+      - key: AI_BASE_URL
+        value: https://api.openai.com/v1
+
+      - key: AI_TIMEOUT_SECONDS
+        value: "30"
+
+      # --- Application ---
+
       - key: LOG_LEVEL
         value: INFO
 
       - key: TIMEZONE
         value: Europe/Berlin
+
+      # --- Moderation defaults (used for newly seen groups) ---
 
       - key: DEFAULT_MODERATION_ENABLED
         value: "true"
@@ -54,14 +78,15 @@ services:
       - key: DEFAULT_WARNING_THRESHOLD
         value: "3"
 
+      # --- Context and limits ---
+
       - key: MAX_CONTEXT_MESSAGES
         value: "100"
 
       - key: MAX_MESSAGE_LENGTH
         value: "4000"
 
-      - key: AI_TIMEOUT_SECONDS
-        value: "30"
+      # --- Summaries ---
 
       - key: DAILY_SUMMARY_ENABLED
         value: "true"
