@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -29,12 +30,18 @@ from app.services.summaries import (
     generate_daily_summaries,
     generate_weekly_summaries,
 )
-from app.services.moderation import _recent_messages
-from app.utils.cleanup import cleanup_old_messages
+from app.utils.cleanup import cleanup_job
 
 logger = logging.getLogger(__name__)
 
 telegram_application: Application | None = None
+
+# Path of the Starlette route that receives Telegram webhook updates.
+WEBHOOK_PATH = "/telegram/webhook"
+
+# Values that mean "yes, use webhook mode, but figure out the actual public
+# URL from the hosting platform" rather than "this is the literal base URL".
+_WEBHOOK_URL_PLACEHOLDER_VALUES = {"true", "1", "yes", "on"}
 
 
 async def initialize_database() -> None:
@@ -78,22 +85,39 @@ async def setup_bot_commands(application: Application) -> None:
     logger.info("Telegram bot commands configured.")
 
 
-async def post_init(application: Application) -> None:
-    logger.info("Initializing database...")
+def get_scheduler_timezone(settings) -> ZoneInfo:
+    """Resolve the ZoneInfo used to schedule daily/weekly summary jobs.
 
-    await initialize_database()
+    Falls back to UTC if `TIMEZONE` is missing, empty, or invalid, so a typo
+    in the environment never prevents the bot from starting.
+    """
+    try:
+        return ZoneInfo(settings.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning(
+            "Invalid TIMEZONE=%r, falling back to UTC for scheduled jobs.",
+            settings.timezone,
+        )
+        return ZoneInfo("UTC")
 
-    logger.info("Database initialized.")
 
-    await setup_bot_commands(application)
+async def schedule_jobs(application: Application) -> None:
+    """Register periodic JobQueue tasks: daily/weekly summaries and memory cleanup.
 
+    Must be called after `Application.initialize()` but the jobs themselves
+    only actually start running once `Application.start()` is awaited.
+    """
     job_queue = application.job_queue
 
     if job_queue is None:
-        logger.warning("Job queue is unavailable.")
+        logger.warning(
+            "Job queue is unavailable (is `python-telegram-bot[job-queue]` "
+            "installed?). Summaries and memory cleanup will not run."
+        )
         return
 
     settings = get_settings()
+    tzinfo = get_scheduler_timezone(settings)
 
     if settings.daily_summary_enabled:
         job_queue.run_daily(
@@ -101,10 +125,15 @@ async def post_init(application: Application) -> None:
             time=time(
                 hour=settings.daily_summary_hour,
                 minute=0,
+                tzinfo=tzinfo,
             ),
         )
 
-        logger.info("Daily summary job scheduled.")
+        logger.info(
+            "Daily summary job scheduled at %02d:00 (%s).",
+            settings.daily_summary_hour,
+            settings.timezone,
+        )
 
     if settings.weekly_summary_enabled:
         day_map = {
@@ -127,19 +156,45 @@ async def post_init(application: Application) -> None:
             time=time(
                 hour=settings.weekly_summary_hour,
                 minute=0,
+                tzinfo=tzinfo,
             ),
             days=(day,),
         )
 
-        logger.info("Weekly summary job scheduled.")
+        logger.info(
+            "Weekly summary job scheduled on day=%s at %02d:00 (%s).",
+            settings.weekly_summary_day,
+            settings.weekly_summary_hour,
+            settings.timezone,
+        )
 
     job_queue.run_repeating(
-        lambda context: cleanup_old_messages(_recent_messages),
+        cleanup_job,
         interval=3600,
-        first=1,
+        first=60,
     )
 
     logger.info("Memory cleanup job scheduled (every 1 hour).")
+
+
+async def post_init(application: Application) -> None:
+    """One-time async setup performed right after `Application.initialize()`.
+
+    Note: this bot does NOT use `Application.run_polling()` /
+    `run_webhook()` (it needs an HTTP health-check server running even in
+    polling mode for Render), so PTB's own `post_init` hook machinery is
+    bypassed and this function is instead called explicitly from
+    `main_async()`.
+    """
+    logger.info("Initializing database...")
+
+    await initialize_database()
+
+    logger.info("Database initialized.")
+
+    await setup_bot_commands(application)
+
+    await schedule_jobs(application)
 
 
 async def webhook_handler(request: Request) -> PlainTextResponse:
@@ -165,22 +220,140 @@ async def webhook_handler(request: Request) -> PlainTextResponse:
 
 
 async def health_check(request: Request) -> PlainTextResponse:
-    """Simple health check endpoint."""
+    """Simple health check endpoint used by Render (`healthCheckPath`)."""
     return PlainTextResponse("ok")
 
 
 def setup_starlette_app() -> Starlette:
-    """Create and configure Starlette application for webhooks."""
+    """Create and configure the Starlette application.
+
+    This HTTP server is started in BOTH webhook and polling mode: Render's
+    free "web service" plan requires the process to bind `$PORT` and answer
+    on `healthCheckPath`, even when Telegram updates are being long-polled
+    instead of pushed to a webhook. Without it, Render considers the deploy
+    failed / the service unhealthy.
+    """
     routes = [
-        Route("/telegram/webhook", webhook_handler, methods=["POST"]),
+        Route(WEBHOOK_PATH, webhook_handler, methods=["POST"]),
         Route("/health", health_check, methods=["GET"]),
     ]
 
     return Starlette(routes=routes)
 
 
-def run() -> None:
-    """Start the Telegram bot."""
+def resolve_webhook_base_url(configured_url: str) -> str | None:
+    """Figure out the public base URL to register as the Telegram webhook.
+
+    - If `WEBHOOK_URL` looks like a real URL, it is used as-is (backward
+      compatible with existing deployments that already set a full URL).
+    - If `WEBHOOK_URL` is just a "please enable webhook mode" placeholder
+      (e.g. "true"/"1"/"yes"), or is otherwise unusable, we fall back to
+      Render's own `RENDER_EXTERNAL_URL` environment variable, which Render
+      injects automatically into every web service — this lets a Render
+      deployment enable webhook mode with zero manual URL configuration.
+    - Returns None if no usable base URL can be determined at all.
+    """
+    candidate = (configured_url or "").strip()
+
+    if candidate and candidate.lower() not in _WEBHOOK_URL_PLACEHOLDER_VALUES:
+        return candidate.rstrip("/")
+
+    render_external_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+
+    if render_external_url:
+        return render_external_url.rstrip("/")
+
+    return None
+
+
+def build_webhook_url(base_url: str) -> str:
+    """Append the webhook path to a base URL, without ever duplicating it."""
+    base_url = base_url.rstrip("/")
+
+    if base_url.endswith(WEBHOOK_PATH):
+        return base_url
+
+    return f"{base_url}{WEBHOOK_PATH}"
+
+
+async def run_webhook_mode(application: Application) -> None:
+    """Configure Telegram to push updates to our Starlette route, then start
+    the Application (this starts the JobQueue, among other things).
+    """
+    settings = get_settings()
+
+    base_url = resolve_webhook_base_url(settings.webhook_url)
+
+    if base_url is None:
+        logger.error(
+            "WEBHOOK_URL=%r but no usable base URL could be resolved and "
+            "RENDER_EXTERNAL_URL is not set either. Falling back to long "
+            "polling so the bot keeps working.",
+            settings.webhook_url,
+        )
+
+        await run_polling_mode(application)
+
+        return
+
+    webhook_url = build_webhook_url(base_url)
+
+    logger.info("Configuring webhook: %s", webhook_url)
+
+    await application.bot.set_webhook(
+        url=webhook_url,
+        allowed_updates=["message", "callback_query"],
+    )
+
+    logger.info("Webhook configured. Starting Application (JobQueue, etc.)...")
+
+    await application.start()
+
+
+async def run_polling_mode(application: Application) -> None:
+    """Start long-polling for updates. An HTTP health server is started in
+    parallel by the caller so Render's health check still passes.
+    """
+    logger.info(
+        "Starting bot in long-polling mode "
+        "(an HTTP health server is started in parallel for Render)."
+    )
+
+    await application.updater.start_polling(
+        allowed_updates=["message", "callback_query"],
+    )
+
+    await application.start()
+
+
+async def shutdown_bot(application: Application) -> None:
+    """Best-effort graceful shutdown: stop polling (if any), stop the
+    Application (this stops the JobQueue), then release its resources.
+    Each step is isolated so a failure in one does not skip the others.
+    """
+    logger.info("Shutting down bot...")
+
+    try:
+        if application.updater is not None and application.updater.running:
+            await application.updater.stop()
+    except Exception:
+        logger.exception("Error while stopping updater.")
+
+    try:
+        if application.running:
+            await application.stop()
+    except Exception:
+        logger.exception("Error while stopping application.")
+
+    try:
+        await application.shutdown()
+    except Exception:
+        logger.exception("Error while shutting down application.")
+
+    logger.info("Bot shut down cleanly.")
+
+
+async def main_async() -> None:
     global telegram_application
 
     settings = get_settings()
@@ -191,8 +364,6 @@ def run() -> None:
 
     application = ApplicationBuilder().token(
         settings.bot_token,
-    ).post_init(
-        post_init,
     ).build()
 
     telegram_application = application
@@ -203,62 +374,50 @@ def run() -> None:
     register_admin_handlers(application)
     register_callback_handlers(application)
 
-    if settings.webhook_url:
-        logger.info(f"Starting bot with webhook: {settings.webhook_url}")
+    starlette_app = setup_starlette_app()
 
-        starlette_app = setup_starlette_app()
+    port = int(os.getenv("PORT", 8000))
 
-        webhook_port = int(os.getenv("PORT", 8000))
+    import uvicorn
 
-        import uvicorn
+    uvicorn_config = uvicorn.Config(
+        app=starlette_app,
+        host="0.0.0.0",
+        port=port,
+        log_level=settings.log_level.lower(),
+    )
 
-        config = uvicorn.Config(
-            app=starlette_app,
-            host="0.0.0.0",
-            port=webhook_port,
-            log_level=settings.log_level.lower(),
-        )
+    server = uvicorn.Server(uvicorn_config)
 
-        server = uvicorn.Server(config)
+    await application.initialize()
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    logger.info("Application initialized.")
 
-        try:
-            loop.run_until_complete(
-                application.initialize()
-            )
+    await post_init(application)
 
-            logger.info("Bot initialized, setting webhook...")
+    try:
+        if settings.webhook_url:
+            await run_webhook_mode(application)
+        else:
+            await run_polling_mode(application)
 
-            loop.run_until_complete(
-                application.bot.set_webhook(
-                    url=settings.webhook_url,
-                    allowed_updates=["message", "callback_query"],
-                )
-            )
+        logger.info("Starting HTTP server on 0.0.0.0:%s ...", port)
 
-            logger.info(f"Webhook set to: {settings.webhook_url}")
+        # `server.serve()` installs its own SIGINT/SIGTERM handlers and
+        # returns cleanly once one of them fires, which lets the `finally`
+        # block below perform a graceful shutdown of the Telegram side.
+        await server.serve()
 
-            loop.run_until_complete(server.serve())
+    finally:
+        await shutdown_bot(application)
 
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user")
 
-        finally:
-            loop.run_until_complete(
-                application.bot.delete_webhook()
-            )
+def run() -> None:
+    """Start the Telegram bot. Entry point used by `python -m app`.
 
-            loop.run_until_complete(
-                application.shutdown()
-            )
-
-            loop.close()
-
-    else:
-        logger.info("Starting bot with polling...")
-
-        application.run_polling(
-            allowed_updates=["message", "callback_query"],
-        )
+    Both webhook and long-polling modes run inside the same asyncio event
+    loop together with the Starlette/uvicorn HTTP server, so the JobQueue
+    (daily/weekly summaries, memory cleanup) and the `/health` endpoint
+    required by Render both work regardless of the chosen mode.
+    """
+    asyncio.run(main_async())
