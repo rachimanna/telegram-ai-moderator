@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,12 +58,8 @@ _moderation_locks: dict[
 ] = defaultdict(asyncio.Lock)
 
 
-def normalize_text(
-    text: str,
-) -> str:
-    return " ".join(
-        text.lower().split()
-    ).strip()
+def normalize_text(text: str) -> str:
+    return " ".join(text.lower().split()).strip()
 
 
 def register_local_message(
@@ -71,76 +67,49 @@ def register_local_message(
     user_id: int,
     text: str,
 ) -> tuple[int, int]:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
-    key = (
-        chat_id,
-        user_id,
-    )
+    key = (chat_id, user_id)
 
     history = _recent_messages[key]
 
     while history:
         timestamp, _ = history[0]
 
-        if (
-            now - timestamp
-            <= REPEAT_WINDOW
-        ):
+        if now - timestamp <= REPEAT_WINDOW:
             break
 
         history.popleft()
 
-    normalized = normalize_text(
-        text
-    )
+    normalized = normalize_text(text)
 
-    history.append(
-        (
-            now,
-            normalized,
-        )
-    )
+    history.append((now, normalized))
 
     flood_count = sum(
         1
         for timestamp, _ in history
-        if (
-            now - timestamp
-            <= MESSAGE_WINDOW
-        )
+        if now - timestamp <= MESSAGE_WINDOW
     )
 
     repeat_count = sum(
         1
         for _, previous_text in history
-        if (
-            previous_text == normalized
-            and normalized
-        )
+        if previous_text == normalized and normalized
     )
 
-    return (
-        flood_count,
-        repeat_count,
-    )
+    return (flood_count, repeat_count)
 
 
 def cleanup_local_state() -> None:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     empty_keys = []
 
-    for key, history in (
-        _recent_messages.items()
-    ):
+    for key, history in _recent_messages.items():
         while history:
             timestamp, _ = history[0]
 
-            if (
-                now - timestamp
-                <= REPEAT_WINDOW
-            ):
+            if now - timestamp <= REPEAT_WINDOW:
                 break
 
             history.popleft()
@@ -149,10 +118,7 @@ def cleanup_local_state() -> None:
             empty_keys.append(key)
 
     for key in empty_keys:
-        _recent_messages.pop(
-            key,
-            None,
-        )
+        _recent_messages.pop(key, None)
 
 
 async def get_group(
@@ -161,28 +127,18 @@ async def get_group(
     chat_title: str,
 ) -> Group:
     result = await session.execute(
-        select(Group).where(
-            Group.telegram_id == chat_id
-        )
+        select(Group).where(Group.telegram_id == chat_id)
     )
 
-    group = (
-        result.scalar_one_or_none()
-    )
+    group = result.scalar_one_or_none()
 
     if group is None:
-        group = Group(
-            telegram_id=chat_id,
-            title=chat_title,
-        )
-
+        group = Group(telegram_id=chat_id, title=chat_title)
         session.add(group)
-
         await session.flush()
 
     elif group.title != chat_title:
         group.title = chat_title
-
         await session.flush()
 
     return group
@@ -194,26 +150,16 @@ async def is_telegram_admin(
     user_id: int,
 ) -> bool:
     try:
-        member = (
-            await context.bot.get_chat_member(
-                chat_id,
-                user_id,
-            )
-        )
+        member = await context.bot.get_chat_member(chat_id, user_id)
 
-        return member.status in {
-            "administrator",
-            "creator",
-        }
+        return member.status in {"administrator", "creator"}
 
     except TelegramError:
         logger.warning(
-            "Could not check admin status: "
-            "chat=%s user=%s",
+            "Could not check admin status: chat=%s user=%s",
             chat_id,
             user_id,
         )
-
         return False
 
 
@@ -240,9 +186,7 @@ async def create_warning(
         )
     )
 
-    warnings = list(
-        result.scalars().all()
-    )
+    warnings = list(result.scalars().all())
 
     return len(warnings)
 
@@ -280,17 +224,14 @@ async def delete_message(
             chat_id=chat_id,
             message_id=telegram_message_id,
         )
-
         return True
 
     except TelegramError:
         logger.warning(
-            "Failed to delete message: "
-            "chat=%s message=%s",
+            "Failed to delete message: chat=%s message=%s",
             chat_id,
             telegram_message_id,
         )
-
         return False
 
 
@@ -300,10 +241,7 @@ async def restrict_user(
     user_id: int,
     minutes: int,
 ) -> bool:
-    until_date = (
-        datetime.utcnow()
-        + timedelta(minutes=minutes)
-    )
+    until_date = datetime.now(timezone.utc) + timedelta(minutes=minutes)
 
     permissions = ChatPermissions(
         can_send_messages=False,
@@ -329,17 +267,14 @@ async def restrict_user(
             permissions=permissions,
             until_date=until_date,
         )
-
         return True
 
     except TelegramError:
         logger.warning(
-            "Failed to restrict user: "
-            "chat=%s user=%s",
+            "Failed to restrict user: chat=%s user=%s",
             chat_id,
             user_id,
         )
-
         return False
 
 
@@ -366,9 +301,7 @@ async def analyze_with_ai(
             timeout=settings.ai_timeout_seconds,
         )
 
-        return parse_moderation_result(
-            raw_response
-        )
+        return parse_moderation_result(raw_response)
 
     except asyncio.TimeoutError:
         logger.warning(
@@ -390,34 +323,25 @@ async def moderate_message(
     text: str,
 ) -> str:
     lock_key = (chat_id, user_id)
-    
-    async with _moderation_locks[lock_key]:
-        group = await get_group(
-            session,
-            chat_id,
-            chat_title,
-        )
 
-        settings = await get_or_create_settings(
-            session,
-            group,
-        )
+    async with _moderation_locks[lock_key]:
+        group = await get_group(session, chat_id, chat_title)
+
+        settings = await get_or_create_settings(session, group)
+
+        clean_username = username.lstrip("@").strip() or None
 
         telegram_user = await get_or_create_user(
             session,
             telegram_id=user_id,
-            username=username.lstrip("@")
-            if username.startswith("@")
-            else None,
+            username=clean_username,
             display_name=display_name,
         )
 
         message = Message(
             group_id=group.id,
             user_id=telegram_user.id,
-            telegram_message_id=(
-                telegram_message_id
-            ),
+            telegram_message_id=telegram_message_id,
             text=text,
         )
 
@@ -425,69 +349,37 @@ async def moderate_message(
 
         await session.flush()
 
-        await increment_message_count(
-            session,
-            group.id,
-        )
+        await increment_message_count(session, group.id)
 
-        await increment_active_user(
-            session,
-            group.id,
-            telegram_user.id,
-        )
+        await increment_active_user(session, group.id, telegram_user.id)
 
-        if await is_telegram_admin(
-            context,
-            chat_id,
-            user_id,
-        ):
+        if await is_telegram_admin(context, chat_id, user_id):
             await session.commit()
-
             cleanup_local_state()
-
             return "ignored_admin"
 
-        flood_count, repeat_count = (
-            register_local_message(
-                chat_id,
-                user_id,
-                text,
-            )
+        flood_count, repeat_count = register_local_message(
+            chat_id,
+            user_id,
+            text,
         )
 
-        if (
-            flood_count
-            >= FLOOD_RESTRICT_LIMIT
-        ):
+        if flood_count >= FLOOD_RESTRICT_LIMIT:
             deleted = await delete_message(
-                context,
-                chat_id,
-                telegram_message_id,
+                context, chat_id, telegram_message_id
             )
 
             restricted = await restrict_user(
-                context,
-                chat_id,
-                user_id,
-                minutes=10,
+                context, chat_id, user_id, minutes=10
             )
 
-            reason = (
-                "Обнаружен сильный флуд."
-            )
+            reason = "Обнаружен сильный флуд."
 
-            await increment_violation_count(
-                session,
-                group.id,
-            )
+            await increment_violation_count(session, group.id)
 
             if deleted:
                 message.is_deleted = True
-
-                await increment_deleted_count(
-                    session,
-                    group.id,
-                )
+                await increment_deleted_count(session, group.id)
 
             await log_moderation(
                 session,
@@ -502,19 +394,11 @@ async def moderate_message(
             await check_critical_issues(session, group.id)
 
             await session.commit()
-
             cleanup_local_state()
 
-            return (
-                "restrict"
-                if restricted
-                else "delete"
-            )
+            return "restrict" if restricted else "delete"
 
-        if (
-            flood_count
-            >= FLOOD_WARNING_LIMIT
-        ):
+        if flood_count >= FLOOD_WARNING_LIMIT:
             warning_count = await create_warning(
                 session,
                 group.id,
@@ -522,10 +406,7 @@ async def moderate_message(
                 "Обнаружен повышенный уровень флуда.",
             )
 
-            await increment_violation_count(
-                session,
-                group.id,
-            )
+            await increment_violation_count(session, group.id)
 
             await log_moderation(
                 session,
@@ -540,26 +421,17 @@ async def moderate_message(
             await check_critical_issues(session, group.id)
 
             await session.commit()
-
             cleanup_local_state()
 
             return "warn"
 
-        if (
-            repeat_count
-            >= REPEAT_RESTRICT_LIMIT
-        ):
+        if repeat_count >= REPEAT_RESTRICT_LIMIT:
             deleted = await delete_message(
-                context,
-                chat_id,
-                telegram_message_id,
+                context, chat_id, telegram_message_id
             )
 
             restricted = await restrict_user(
-                context,
-                chat_id,
-                user_id,
-                minutes=10,
+                context, chat_id, user_id, minutes=10
             )
 
             reason = (
@@ -567,18 +439,11 @@ async def moderate_message(
                 "повторение одинаковых сообщений."
             )
 
-            await increment_violation_count(
-                session,
-                group.id,
-            )
+            await increment_violation_count(session, group.id)
 
             if deleted:
                 message.is_deleted = True
-
-                await increment_deleted_count(
-                    session,
-                    group.id,
-                )
+                await increment_deleted_count(session, group.id)
 
             await log_moderation(
                 session,
@@ -593,19 +458,11 @@ async def moderate_message(
             await check_critical_issues(session, group.id)
 
             await session.commit()
-
             cleanup_local_state()
 
-            return (
-                "restrict"
-                if restricted
-                else "delete"
-            )
+            return "restrict" if restricted else "delete"
 
-        if (
-            repeat_count
-            >= REPEAT_WARNING_LIMIT
-        ):
+        if repeat_count >= REPEAT_WARNING_LIMIT:
             await create_warning(
                 session,
                 group.id,
@@ -613,10 +470,7 @@ async def moderate_message(
                 "Обнаружено повторение одинаковых сообщений.",
             )
 
-            await increment_violation_count(
-                session,
-                group.id,
-            )
+            await increment_violation_count(session, group.id)
 
             await log_moderation(
                 session,
@@ -631,46 +485,32 @@ async def moderate_message(
             await check_critical_issues(session, group.id)
 
             await session.commit()
-
             cleanup_local_state()
 
             return "warn"
 
         if not settings.moderation_enabled:
             await session.commit()
-
             cleanup_local_state()
-
             return "allowed"
 
         try:
-            result = await analyze_with_ai(
-                text=text,
-                username=username,
-            )
+            result = await analyze_with_ai(text=text, username=username)
 
         except Exception as e:
-            logger.exception(
-                f"AI moderation failed: {e}"
-            )
+            logger.exception(f"AI moderation failed: {e}")
 
             await session.commit()
-
             cleanup_local_state()
 
             return "allowed"
 
         if not result.violation:
             await session.commit()
-
             cleanup_local_state()
-
             return "allowed"
 
-        await increment_violation_count(
-            session,
-            group.id,
-        )
+        await increment_violation_count(session, group.id)
 
         decision = decide_action(
             violation=result.violation,
@@ -701,15 +541,9 @@ async def moderate_message(
                 result.reason,
             )
 
-            if (
-                warning_count
-                >= settings.warning_threshold
-            ):
+            if warning_count >= settings.warning_threshold:
                 restricted = await restrict_user(
-                    context,
-                    chat_id,
-                    user_id,
-                    minutes=10,
+                    context, chat_id, user_id, minutes=10
                 )
 
                 if restricted:
@@ -726,25 +560,18 @@ async def moderate_message(
                     await check_critical_issues(session, group.id)
 
                     await session.commit()
-
                     cleanup_local_state()
 
                     return "restrict"
 
         elif action == "delete":
             deleted = await delete_message(
-                context,
-                chat_id,
-                telegram_message_id,
+                context, chat_id, telegram_message_id
             )
 
             if deleted:
                 message.is_deleted = True
-
-                await increment_deleted_count(
-                    session,
-                    group.id,
-                )
+                await increment_deleted_count(session, group.id)
 
             await log_moderation(
                 session,
@@ -758,25 +585,16 @@ async def moderate_message(
 
         elif action == "restrict":
             deleted = await delete_message(
-                context,
-                chat_id,
-                telegram_message_id,
+                context, chat_id, telegram_message_id
             )
 
             restricted = await restrict_user(
-                context,
-                chat_id,
-                user_id,
-                minutes=10,
+                context, chat_id, user_id, minutes=10
             )
 
             if deleted:
                 message.is_deleted = True
-
-                await increment_deleted_count(
-                    session,
-                    group.id,
-                )
+                await increment_deleted_count(session, group.id)
 
             await log_moderation(
                 session,
@@ -791,14 +609,9 @@ async def moderate_message(
             await check_critical_issues(session, group.id)
 
             await session.commit()
-
             cleanup_local_state()
 
-            return (
-                "restrict"
-                if restricted
-                else "delete"
-            )
+            return "restrict" if restricted else "delete"
 
         elif action == "notify":
             await log_moderation(
@@ -814,7 +627,6 @@ async def moderate_message(
         await check_critical_issues(session, group.id)
 
         await session.commit()
-
         cleanup_local_state()
 
         return action
