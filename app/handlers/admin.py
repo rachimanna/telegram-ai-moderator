@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from telegram import (
     ChatPermissions,
@@ -41,15 +41,10 @@ async def is_admin(
             user.id,
         )
     except Exception:
-        logger.exception(
-            "Failed to check admin status."
-        )
+        logger.exception("Failed to check admin status.")
         return False
 
-    return member.status in {
-        "administrator",
-        "creator",
-    }
+    return member.status in {"administrator", "creator"}
 
 
 def settings_keyboard(
@@ -86,42 +81,12 @@ def settings_keyboard(
 
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton(
-                    moderation_text,
-                    callback_data="admin_moderation",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    ai_text,
-                    callback_data="admin_ai",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    f"🎚 Строгость: {strictness}",
-                    callback_data="admin_strictness",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    f"⚠️ Лимит: {warning_threshold}",
-                    callback_data="admin_threshold",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    daily_text,
-                    callback_data="admin_daily",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    weekly_text,
-                    callback_data="admin_weekly",
-                )
-            ],
+            [InlineKeyboardButton(moderation_text, callback_data="admin_moderation")],
+            [InlineKeyboardButton(ai_text, callback_data="admin_ai")],
+            [InlineKeyboardButton(f"🎚 Строгость: {strictness}", callback_data="admin_strictness")],
+            [InlineKeyboardButton(f"⚠️ Лимит: {warning_threshold}", callback_data="admin_threshold")],
+            [InlineKeyboardButton(daily_text, callback_data="admin_daily")],
+            [InlineKeyboardButton(weekly_text, callback_data="admin_weekly")],
         ]
     )
 
@@ -137,26 +102,18 @@ async def build_settings_message(
             title="Telegram Group",
         )
 
-        settings = await get_or_create_settings(
-            session,
-            group,
-        )
+        settings = await get_or_create_settings(session, group)
 
         await session.commit()
 
         text = (
             "⚙️ Настройки AI-модератора\n\n"
-            f"🛡 Модерация: "
-            f"{'ВКЛ' if settings.moderation_enabled else 'ВЫКЛ'}\n"
-            f"🤖 AI-ответы: "
-            f"{'ВКЛ' if settings.ai_answers_enabled else 'ВЫКЛ'}\n"
+            f"🛡 Модерация: {'ВКЛ' if settings.moderation_enabled else 'ВЫКЛ'}\n"
+            f"🤖 AI-ответы: {'ВКЛ' if settings.ai_answers_enabled else 'ВЫКЛ'}\n"
             f"🎚 Строгость: {settings.strictness}\n"
-            f"⚠️ Лимит предупреждений: "
-            f"{settings.warning_threshold}\n"
-            f"📋 Ежедневная сводка: "
-            f"{'ВКЛ' if settings.daily_summary_enabled else 'ВЫКЛ'}\n"
-            f"📊 Еженедельная сводка: "
-            f"{'ВКЛ' if settings.weekly_summary_enabled else 'ВЫКЛ'}"
+            f"⚠️ Лимит предупреждений: {settings.warning_threshold}\n"
+            f"📋 Ежедневная сводка: {'ВКЛ' if settings.daily_summary_enabled else 'ВЫКЛ'}\n"
+            f"📊 Еженедельная сводка: {'ВКЛ' if settings.weekly_summary_enabled else 'ВЫКЛ'}"
         )
 
         keyboard = settings_keyboard(
@@ -178,13 +135,9 @@ async def settings_command(
     if update.effective_message is None:
         return
 
-    if not await is_admin(
-        update,
-        context,
-    ):
+    if not await is_admin(update, context):
         await update.effective_message.reply_text(
-            "⛔ Только администраторы группы "
-            "могут изменять настройки."
+            "⛔ Только администраторы группы могут изменять настройки."
         )
         return
 
@@ -193,15 +146,9 @@ async def settings_command(
     if chat is None:
         return
 
-    text, keyboard = await build_settings_message(
-        chat.id,
-        context,
-    )
+    text, keyboard = await build_settings_message(chat.id, context)
 
-    await update.effective_message.reply_text(
-        text,
-        reply_markup=keyboard,
-    )
+    await update.effective_message.reply_text(text, reply_markup=keyboard)
 
 
 async def admin_callback(
@@ -213,14 +160,8 @@ async def admin_callback(
     if query is None:
         return
 
-    if not await is_admin(
-        update,
-        context,
-    ):
-        await query.answer(
-            "⛔ Только для администраторов.",
-            show_alert=True,
-        )
+    if not await is_admin(update, context):
+        await query.answer("⛔ Только для администраторов.", show_alert=True)
         return
 
     chat = update.effective_chat
@@ -237,141 +178,59 @@ async def admin_callback(
             title=chat.title or "Telegram Group",
         )
 
-        settings = await get_or_create_settings(
-            session,
-            group,
-        )
-
-        # ---------------------------------------------
-        # Toggle moderation
-        # ---------------------------------------------
+        settings = await get_or_create_settings(session, group)
 
         if data == "admin_moderation":
             await update_settings(
-                session,
-                group,
-                moderation_enabled=(
-                    not settings.moderation_enabled
-                ),
+                session, group,
+                moderation_enabled=not settings.moderation_enabled,
             )
-
-        # ---------------------------------------------
-        # Toggle AI answers
-        # ---------------------------------------------
 
         elif data == "admin_ai":
             await update_settings(
-                session,
-                group,
-                ai_answers_enabled=(
-                    not settings.ai_answers_enabled
-                ),
+                session, group,
+                ai_answers_enabled=not settings.ai_answers_enabled,
             )
-
-        # ---------------------------------------------
-        # Strictness
-        # ---------------------------------------------
 
         elif data == "admin_strictness":
-            values = [
-                "low",
-                "medium",
-                "high",
-            ]
-
-            current = settings.strictness
-
+            values = ["low", "medium", "high"]
             try:
-                index = values.index(current)
+                index = values.index(settings.strictness)
             except ValueError:
                 index = 1
-
-            next_value = values[
-                (index + 1) % len(values)
-            ]
-
-            await update_settings(
-                session,
-                group,
-                strictness=next_value,
-            )
-
-        # ---------------------------------------------
-        # Warning threshold
-        # ---------------------------------------------
+            next_value = values[(index + 1) % len(values)]
+            await update_settings(session, group, strictness=next_value)
 
         elif data == "admin_threshold":
-            values = [
-                2,
-                3,
-                5,
-                10,
-            ]
-
-            current = settings.warning_threshold
-
+            values = [2, 3, 5, 10]
             try:
-                index = values.index(current)
+                index = values.index(settings.warning_threshold)
             except ValueError:
                 index = 1
-
-            next_value = values[
-                (index + 1) % len(values)
-            ]
-
-            await update_settings(
-                session,
-                group,
-                warning_threshold=next_value,
-            )
-
-        # ---------------------------------------------
-        # Daily summary
-        # ---------------------------------------------
+            next_value = values[(index + 1) % len(values)]
+            await update_settings(session, group, warning_threshold=next_value)
 
         elif data == "admin_daily":
             await update_settings(
-                session,
-                group,
-                daily_summary_enabled=(
-                    not settings.daily_summary_enabled
-                ),
+                session, group,
+                daily_summary_enabled=not settings.daily_summary_enabled,
             )
-
-        # ---------------------------------------------
-        # Weekly summary
-        # ---------------------------------------------
 
         elif data == "admin_weekly":
             await update_settings(
-                session,
-                group,
-                weekly_summary_enabled=(
-                    not settings.weekly_summary_enabled
-                ),
+                session, group,
+                weekly_summary_enabled=not settings.weekly_summary_enabled,
             )
 
         await session.commit()
 
-    text, keyboard = await build_settings_message(
-        chat.id,
-        context,
-    )
+    text, keyboard = await build_settings_message(chat.id, context)
 
     try:
-        await query.answer(
-            "Настройка изменена."
-        )
-
-        await query.edit_message_text(
-            text,
-            reply_markup=keyboard,
-        )
-
+        await query.answer("Настройка изменена.")
+        await query.edit_message_text(text, reply_markup=keyboard)
     except Exception:
-        logger.exception(
-            "Failed to update admin settings message."
-        )
+        logger.exception("Failed to update admin settings message.")
 
 
 async def unmute_command(
@@ -384,13 +243,9 @@ async def unmute_command(
     if message is None or chat is None:
         return
 
-    if not await is_admin(
-        update,
-        context,
-    ):
+    if not await is_admin(update, context):
         await message.reply_text(
-            "⛔ Только администраторы группы "
-            "могут снимать ограничения."
+            "⛔ Только администраторы группы могут снимать ограничения."
         )
         return
 
@@ -402,8 +257,7 @@ async def unmute_command(
 
     if target is None:
         await message.reply_text(
-            "Ответь этой командой на сообщение "
-            "пользователя, которого нужно размьютить."
+            "Ответь этой командой на сообщение пользователя, которого нужно размьютить."
         )
         return
 
@@ -430,32 +284,19 @@ async def unmute_command(
             user_id=target.id,
             permissions=full_permissions,
         )
-
     except TelegramError:
         logger.exception(
-            "Failed to unmute user: "
-            "chat=%s user=%s",
-            chat.id,
-            target.id,
+            "Failed to unmute user: chat=%s user=%s", chat.id, target.id
         )
-
         await message.reply_text(
-            "Не получилось снять ограничение — "
-            "проверь, что у бота есть права "
-            "администратора (Restrict members)."
+            "Не получилось снять ограничение — проверь, что у бота есть "
+            "права администратора (Restrict members)."
         )
-
         return
 
-    display_name = (
-        target.full_name
-        or target.username
-        or str(target.id)
-    )
+    display_name = target.full_name or target.username or str(target.id)
 
-    await message.reply_text(
-        f"✅ С {display_name} сняты ограничения."
-    )
+    await message.reply_text(f"✅ С {display_name} сняты ограничения.")
 
 
 async def mute_command(
@@ -468,13 +309,9 @@ async def mute_command(
     if message is None or chat is None:
         return
 
-    if not await is_admin(
-        update,
-        context,
-    ):
+    if not await is_admin(update, context):
         await message.reply_text(
-            "⛔ Только администраторы группы "
-            "могут ограничивать участников."
+            "⛔ Только администраторы группы могут ограничивать участников."
         )
         return
 
@@ -486,10 +323,8 @@ async def mute_command(
 
     if target is None:
         await message.reply_text(
-            "Ответь этой командой на сообщение "
-            "пользователя, которого нужно замьютить. "
-            "Можно указать минуты: /mute 30 "
-            "(по умолчанию — 10)."
+            "Ответь этой командой на сообщение пользователя, которого нужно "
+            "замьютить. Можно указать минуты: /mute 30 (по умолчанию — 10)."
         )
         return
 
@@ -497,17 +332,23 @@ async def mute_command(
 
     if context.args:
         try:
-            minutes = max(
-                1,
-                int(context.args[0]),
+            minutes = int(context.args[0])
+        except (ValueError, TypeError):
+            await message.reply_text(
+                "Неверное число минут. Пример: /mute 30 (от 1 до 525600)."
             )
-        except ValueError:
-            pass
+            return
 
-    until_date = (
-        datetime.utcnow()
-        + timedelta(minutes=minutes)
-    )
+        if minutes < 1:
+            await message.reply_text(
+                "Количество минут должно быть не меньше 1."
+            )
+            return
+
+        # Telegram трактует длительность больше ~366 дней как «навсегда».
+        minutes = min(minutes, 525600)
+
+    until_date = datetime.now(timezone.utc) + timedelta(minutes=minutes)
 
     restricted_permissions = ChatPermissions(
         can_send_messages=False,
@@ -533,61 +374,25 @@ async def mute_command(
             permissions=restricted_permissions,
             until_date=until_date,
         )
-
     except TelegramError:
         logger.exception(
-            "Failed to mute user: "
-            "chat=%s user=%s",
-            chat.id,
-            target.id,
+            "Failed to mute user: chat=%s user=%s", chat.id, target.id
         )
-
         await message.reply_text(
-            "Не получилось замьютить — "
-            "проверь, что у бота есть права "
+            "Не получилось замьютить — проверь, что у бота есть права "
             "администратора (Restrict members)."
         )
-
         return
 
-    display_name = (
-        target.full_name
-        or target.username
-        or str(target.id)
-    )
+    display_name = target.full_name or target.username or str(target.id)
 
-    await message.reply_text(
-        f"🔇 {display_name} замьючен на {minutes} мин."
-    )
+    await message.reply_text(f"🔇 {display_name} замьючен на {minutes} мин.")
 
 
-def register_admin_handlers(
-    application,
-) -> None:
+def register_admin_handlers(application) -> None:
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("unmute", unmute_command))
+    application.add_handler(CommandHandler("mute", mute_command))
     application.add_handler(
-        CommandHandler(
-            "settings",
-            settings_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "unmute",
-            unmute_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "mute",
-            mute_command,
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            admin_callback,
-            pattern=r"^admin_",
-        )
+        CallbackQueryHandler(admin_callback, pattern=r"^admin_")
     )
